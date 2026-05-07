@@ -1,7 +1,11 @@
-# HLAgent — Windows 通用 Agent 产品需求（PRD v0.2）
+# HLAgent — Windows 通用 Agent 产品需求（PRD v0.4）
 
 > 融合 OpenClaw 与 Claude Code 设计哲学，面向 Windows 个人消费者的开源 + 市场化通用 AI 助理。
-> 核心理念：**一个本地 daemon + 多前端**；**多 Agent 双模式**；**模型/工具可插拔**；**Windows 原生体验**。
+> 核心理念：**纯桌面应用（无 CLI）**；**多 Agent 双模式**；**模型/工具可插拔**；**Windows 原生体验**。
+
+**v0.4 变更摘要**：开放问题 §12 全部敲定 →（1）daemon 常驻 + 空闲休眠；（2）平台收敛到 **Windows x64**（不发 ARM64，不再 Win10 多版本矩阵）；（3）Marketplace 后端用 **GitHub Releases + 索引 JSON**；（4）遥测**默认 0**（不收集，不留可选）；（5）将 `e:/AI/learn-claude-code` 中的 claw-code 作为参考样例引用（仅文档，不作依赖）；（6）OpenAI 兼容代理样例**不维护**，由社区贡献；（7）**不预设默认 embedding 模型**，首启向导由用户选择；（8）全局命令栏保留愿景，v1 不实现。CI 矩阵、§3.3、§5.7、§5.10、§9 等同步修正。
+
+**v0.3 变更摘要**：移除 CLI 形态（v1 仅桌面应用 + 内置 daemon，前端只剩 Tauri Desktop；VSCode 扩展仍留 v2）；同步删除仓库 `apps/cli/`、`hlagent` 子命令、CLI 相关验证步骤与 Marketplace 发布通道。Daemon 改为桌面进程内置（sidecar 子进程），不再对外暴露独立 CLI。
 
 **v0.2 变更摘要**：删除 Workflow 模式（多 Agent 协作只保留 Delegate / Peer 两模式）；Provider 收敛为 OpenAI / Anthropic 两套协议适配，本地模型走 OpenAI 兼容 endpoint；补漏 9 组（架构隔离 / Agent 元数据 / 多 Agent 协作 / Provider 能力面 / TodoWrite·Skills·MCP·Bash / Hooks / Memory / 权限审批 / 仓库与里程碑）。
 
@@ -20,6 +24,7 @@
 参考来源（关键能力对标）：
 - OpenClaw：[`openclaw/openclaw`](https://github.com/openclaw/openclaw)、[`docs.openclaw.ai`](https://docs.openclaw.ai)（sub-agents、hooks、skills、slash-commands、MCP、memory、providers、exec-approvals、gateway）、[`awesome-openclaw-agents`](https://github.com/mergisi/awesome-openclaw-agents)、[OpenClaw Desktop](https://github.com/agentkernel/openclaw-desktop)
 - Claude Code：[Overview](https://code.claude.com/docs/en/overview)、[Sub-agents](https://code.claude.com/docs/en/sub-agents)、[Hooks](https://code.claude.com/docs/en/hooks)、[Skills](https://code.claude.com/docs/en/skills)、[Memory](https://code.claude.com/docs/en/memory)、[Settings](https://docs.anthropic.com/en/docs/claude-code/settings)
+- **本地参考样例**：`e:/AI/learn-claude-code/`（claw-code 风格 harness、TodoWrite / sub-agent / hook 等示意实现），**仅作设计参考与示例数据来源**，HLAgent 不依赖其代码、不打包发行。
 
 ---
 
@@ -27,7 +32,7 @@
 
 ### 2.1 首期目标用户
 - **个人消费者**（Power user / 开发者 / 内容创作者 / 研究人员）。
-- 设备：Windows 10 1809+ / Windows 11，x64 / ARM64。
+- 设备：**Windows 11 x64**（最低 Windows 10 21H2 x64）；不发行 ARM64；其他平台不在 v1 范围。
 
 ### 2.2 典型场景（首发覆盖）
 1. **通用桌面助理**：自然语言驱动文件批量整理、Office 文档生成/汇总、浏览器自动化、邮件/微信草稿。
@@ -36,23 +41,23 @@
 4. **多 Agent 协作**：「研究员 + 写作员 + 审稿员」、「计划员 + 执行员 + 检查员」等组合。
 
 ### 2.3 非目标（v1 不做）
-- 服务器/云端多租户托管；移动端；Linux/macOS 原生壳（仅保留 CLI 跨平台）；企业 SSO/审计/集中策略下发（留 v2）。
+- 服务器/云端多租户托管；移动端；Linux/macOS 原生壳；CLI 形态（v1 仅桌面应用，命令行场景由桌面内的命令栏 / Slash Commands 覆盖）；企业 SSO/审计/集中策略下发（留 v2）。
 
 ---
 
 ## 3. 产品形态与技术栈
 
-### 3.1 形态：Windows 桌面应用（主） + CLI（辅）
+### 3.1 形态：Windows 桌面应用（单一形态）
 - **桌面壳**：Tauri 2（WebView2，安装包 < 15 MB，常驻 < 120 MB）。
-- **本地 daemon**：随桌面/CLI 启动，监听 `127.0.0.1` HTTP + WS（也可 Named Pipe），所有前端共享同一会话。
-- **CLI**：`hlagent` 子命令（参考 `claude` / `openclaw` CLI），可在桌面外独立使用，与桌面共享配置。
+- **本地 daemon**：作为桌面应用的 **sidecar 子进程**（由桌面壳启动 / 守护 / 关闭），监听本机 Named Pipe（开发模式可选 `127.0.0.1` HTTP + WS）；不对外暴露 CLI 入口。
+- **唯一前端**：Tauri Desktop（v1）；VSCode 扩展留 v2。
 
 ### 3.2 技术栈（性能/资源优先）
 - **核心 daemon**：Rust（Tokio + Axum + serde + sqlx/SQLite）。
 - **前端**：TypeScript + React + Vite + shadcn/ui + TailwindCSS + Lucide。
-- **打包**：Tauri 2（含自动更新、代码签名、托盘、全局快捷键）。
-- **跨进程**：Tauri IPC（前端↔壳） + HTTP/WS（壳/CLI ↔ daemon）。
-- **存储**：SQLite（会话/消息/记忆/审计），文件层 `%APPDATA%\HLAgent\`。
+- **打包**：Tauri 2（含自动更新、代码签名、托盘、全局快捷键、sidecar 二进制嵌入）。
+- **跨进程**：Tauri IPC（前端 ↔ 壳） + Named Pipe / HTTP-WS（壳 ↔ daemon sidecar）。
+- **存储**：SQLite（会话/消息/记忆/审计），文件层 `%APPDATA%\HLAgent\` / `%LOCALAPPDATA%\HLAgent\`（详见 §3.3）。
 - **凭证**：Windows DPAPI（`CryptProtectData`）加密 API Key，落盘文件 + 系统凭据管理器双写。
 
 理由：
@@ -62,7 +67,7 @@
 ### 3.3 运行时与隔离
 - **IPC 安全**：本地 daemon 默认 **Named Pipe + Windows ACL**（仅当前用户 SID 可访问）；HTTP/WS 仅作为开发模式或显式开启时启用，必须 `127.0.0.1` + Origin 校验 + 启动期生成 bearer token。
 - **多用户**：每用户独立 daemon；数据放 `%LOCALAPPDATA%\HLAgent\`（漫游不带 secret），配置可选 `%APPDATA%\HLAgent\`。
-- **Daemon 生命周期**：PID lock + 健康检查 + 崩溃自启 + 僵尸清理；空闲休眠（无活跃会话 N 分钟）唤醒延迟目标 < 200ms。
+- **Daemon 生命周期**：**常驻进程**（桌面壳启动时拉起 sidecar，桌面退出后由用户在托盘选择保留 / 关闭；默认保留以加速二次唤起）；PID lock + 健康检查 + 崩溃自启 + 僵尸清理；空闲（无活跃会话 N 分钟）进入低占用态而非退出，唤醒延迟目标 < 200ms。
 - **Schema migration**：SQLite 用 `sqlx migrations`；版本兼容矩阵记入 `docs/migrations.md`。
 - **配置/数据迁移**：导入导出 `.hla` 包；卸载时保留数据策略（询问用户）；版本回退兼容窗口 = 当前 + 1 minor。
 - **日志**：路径 `%LOCALAPPDATA%\HLAgent\logs\`，按日轮转，单文件 ≤ 10MB，保留 14 天，自动脱敏 secret 模式；用户一键打包反馈。
@@ -74,14 +79,14 @@
 ## 4. 总体架构
 
 ```
-┌────────────────────────┐    ┌────────────────────────┐    ┌────────────────────┐
-│ Tauri Desktop (React)  │    │ CLI (hlagent)          │    │ VSCode Ext (v2)    │
-└──────────┬─────────────┘    └──────────┬─────────────┘    └─────────┬──────────┘
-           │ Tauri IPC + HTTP/WS         │ HTTP/WS                    │
-           └──────────────┬──────────────┴────────────────────────────┘
+┌────────────────────────┐                               ┌────────────────────┐
+│ Tauri Desktop (React)  │                               │ VSCode Ext (v2)    │
+└──────────┬─────────────┘                               └─────────┬──────────┘
+           │ Tauri IPC + Named Pipe / HTTP-WS                      │ HTTP-WS（v2）
+           └──────────────┬────────────────────────────────────────┘
                           ▼
                 ┌──────────────────────┐
-                │  HLAgent Daemon      │  Rust core, single process
+                │  HLAgent Daemon      │  Rust core, sidecar 子进程（由桌面壳守护）
                 │  ┌──────────────┐    │
                 │  │ Session/Run  │    │
                 │  │ Orchestrator │ ◄──┼──── Multi-Agent Modes (Delegate/Peer)
@@ -177,7 +182,7 @@ icon: shield-check
 - **OpenAI 兼容 endpoint（统一走 OpenAI 协议）**：
   - 本地：Ollama、llama.cpp（`server` 模式）、vLLM、LM Studio
   - 私有：自建 / 企业内 OpenAI-Compatible Gateway（如 LiteLLM、One-API、New API）
-- **不在 v1 范围**：Gemini、Bedrock、Vertex、Azure OpenAI、DeepSeek、Qwen DashScope、Mistral、xAI、Moonshot 的**原生协议**。用户可通过自建 OpenAI 兼容代理接入；官方协议留 v1.x roadmap。
+- **不在 v1 范围**：Gemini、Bedrock、Vertex、Azure OpenAI、DeepSeek、Qwen DashScope、Mistral、xAI、Moonshot 的**原生协议**。用户可通过自建 OpenAI 兼容代理（LiteLLM / One-API / 自研代理）接入；**官方不维护示例 profile**，由社区贡献。原生协议留 v1.x roadmap。
 - **Profile 概念**（每个 Agent / 每次调用都可引用）：
   ```yaml
   profiles:
@@ -287,6 +292,28 @@ icon: shield-check
 - 自定义命令：`<scope>/commands/*.md`，frontmatter 指定 `description / tools / model`。
 - 内置：`/agents`、`/skills`、`/mcp`、`/memory`、`/cost`、`/clear`、`/compact`、`/model`、`/permissions`、`/diff`、`/replay`、`/export`。
 
+**使用位置（v1）**：
+- **唯一输入入口**：主窗口对话区底部的**会话输入框**。键入 `/` 立即弹出自动补全面板（命令名 / 描述 / 子命令 / 参数提示）。
+- 全局命令栏为愿景（v1 不实现，见 §5.9 / §12 第 8 项），届时与会话输入框共享同一套命令注册表。
+
+**命令路由（按执行效果分两类，输入位置相同）**：
+
+| 类别 | 命令 | 执行效果 | 是否进 transcript | 是否调用 LLM |
+|---|---|---|---|---|
+| **打开面板类** | `/agents` `/skills` `/mcp` `/permissions` `/diff` `/cost` `/replay` `/export` `/hooks`（如启用） | 桌面壳切换到对应 Sidebar 分区或弹出浮层 | 仅一行系统消息「已打开 X 面板」 | ❌ |
+| **会话内类** | `/memory` `/compact` `/clear` `/model` `/budget`（如启用）`/todo`（如启用） | 由 daemon 解释执行，结果以系统消息内联显示 | ✅ 完整内联 | ❌ |
+| **覆盖层** | `/help` | 弹出命令面板 + 文档链接 | ❌ | ❌ |
+
+**等价快捷入口（非必经，仅为加速）**：「打开面板类」对应面板在 Sidebar / 顶栏菜单已常驻可点击；斜杠命令是键盘党的等价快捷方式，不是唯一入口。
+- `/agents` ↔ 左 Sidebar → Agent 分区
+- `/skills` ↔ 左 Sidebar → Skills 分区
+- `/mcp` ↔ 左 Sidebar → MCP 分区
+- `/permissions` ↔ 设置 → 权限面板
+- `/diff` ↔ 会话内 diff 行的「展开」按钮 / Monaco 浮层
+- `/cost` ↔ 左 Sidebar → 成本分区
+- `/replay` ↔ 会话列表右键「Replay」
+- `/export` ↔ 会话顶栏「⋯ → 导出」
+
 ### 5.7 Memory（分层记忆）
 - 层级：**Global（系统级）→ User（个人偏好）→ Project（仓库级 `HLAGENT.md`）→ Session（会话级）**。
 - 写入方式：
@@ -302,7 +329,7 @@ icon: shield-check
 - **隐私脱敏**：禁止入库正则名单（API key / 密码 / 身份证 / 手机号 / 信用卡），命中即提示用户决定是否手动 redact。
 - **同步**：默认关闭；可选用户云盘 / Git / WebDAV 通道，端到端加密（用户密码派生密钥）。
 - **向量库**：首选 `sqlite-vec`（零外部依赖、与主库共存）；可选 `lancedb`（更大规模、更高吞吐）。
-- **嵌入模型**：默认本地 `bge-m3` 或 `text-embedding-qwen`，跟随 endpoint 隐私级别匹配；云端 endpoint 仅在隐私模式允许时调用。
+- **嵌入模型**：**不预设默认**；首启向导由用户在候选列表中选择（候选含本地 `bge-m3` / `text-embedding-qwen` / 用户自填 OpenAI 兼容 endpoint）。未选择前 Memory 仅做关键字检索（向量检索关闭），UI 显著提示。选择后跟随 endpoint 隐私级别匹配；云端 endpoint 仅在隐私模式允许时调用。
 - **多语言**：embedding 跨中英检索效果做评测样本进入 §10 评测集，回归监控。
 
 ### 5.8 权限与审批（Permission / Exec Approvals）
@@ -331,15 +358,17 @@ icon: shield-check
 - **任务计划面板**：TodoWrite 实时同步，可手动勾选/重排，主-子 Agent 任务可视化树。
 - **审批弹窗**：醒目的「拒绝/允许一次/允许本会话/永久允许」按钮。
 - **diff 查看器**：基于 Monaco；变更可批量回滚。
-- **托盘 + 全局快捷键**：`Ctrl+Alt+Space` 唤起命令栏（类似 Raycast）；选中文本 → 快捷送入 Agent。
+- **托盘**：托盘图标 + 右键菜单（打开主窗口、新建会话、退出）。
+- **全局命令栏（愿景，v1 不实现）**：长期目标是 `Ctrl+Alt+Space` 唤起 Raycast 式浮窗（自然语言直达 Agent / `/` 命令 / `@` 引用文件 / `#` 写记忆 / 选中文本快捷送入 Agent）。**v1 不实现**，仅在主窗口对话区与 Sidebar 提供 `/` 命令入口；规格见 §12 开放问题。
 - **多窗口/会话**：每个会话独立 token & cost 计数；一键 Pin 置顶；会话可导出 `.hla` 包（含设置但脱敏 secret）。
 - **暗色/浅色 + 中英文 i18n**；可访问性（键盘全操作、屏幕阅读器友好）。
 
 ### 5.10 市场（Marketplace）
 - 资产类型：**Agent / Skill / MCP Server / Slash Command / Hook 包 / Provider Profile**。
-- 发布：CLI `hlagent publish`，签名（minisign / Sigstore）。
+- **后端**：v1 采用 **GitHub Releases + 索引 JSON**（不自建后端）；官方索引仓库维护一份聚合的 `index.json`（资产清单 + 版本 + 哈希 + 签名），桌面应用按需拉取、缓存、增量更新。
+- 发布：在桌面应用「Marketplace → 我的资产」面板内打包并签名（minisign / Sigstore）；产物推到创作者自有 GitHub Release，PR 到官方索引仓库以登记。
 - 安装：UI 一键安装；自动校验 manifest、声明的工具/网络权限，二次确认。
-- 治理：分级（Verified / Community / Experimental），举报 + 静默禁用清单。
+- 治理：分级（Verified / Community / Experimental），举报 + 静默禁用清单（通过索引仓库的 `revocation.json` 推送）。
 
 ### 5.11 可观测性
 - Token & 成本仪表板（按 Agent / 会话 / 日 / 月聚合）。
@@ -354,18 +383,18 @@ icon: shield-check
 2. **预算与成本止损**：每 Agent + 每会话双重预算，超出走 BudgetExceeded hook（默认暂停 + 通知）。
 3. **上下文压缩可控**：`PreCompact` 钩子让用户决定要保留什么；压缩前自动落盘 transcript。
 4. **多 Agent 消息总线**：Peer 模式需显式终止条件（轮数 / 一致性 / 用户中止 / 语义停滞 / 成本上限），避免无限对话。
-5. **隐私模式 / 数据驻留**：一键「不发送代码片段到云端」「仅本地 endpoint」「禁用遥测」。
+5. **隐私模式 / 数据驻留**：一键「不发送代码片段到云端」「仅本地 endpoint」；**遥测默认 0、不内置开关**。
 6. **凭证保管**：API Key 走 DPAPI；导出 `.hla` 时自动脱敏；剪贴板 token 检测告警。
 7. **Secret 扫描**：内置 PreToolUse 钩子，扫描即将发往模型的内容（git secrets 规则）。
 8. **网络环境**：HTTP/SOCKS 代理、PAC、企业 CA 证书导入；离线安装包（含本地模型 manifest）。
 9. **Vision/语音**：截图 → 视觉模型；语音输入（Windows Speech / Whisper.cpp 本地）；TTS 输出。
 10. **WSL/Cygwin 互通**：Bash 工具可指定 shell 后端；路径自动 `\\wsl$\` ↔ `/mnt/c/` 转换。
-11. **崩溃报告 & 自动更新**：Tauri Updater + 可选崩溃上报（默认关闭）。
+11. **崩溃报告 & 自动更新**：Tauri Updater；**不内置崩溃上报**（用户可手动从设置导出诊断包反馈给开发者）。
 12. **代码签名**：发行版 EV 证书签名，避免 SmartScreen 警告；安装器（MSIX + EXE 双发）。
 13. **冷启动 / 占用目标**：托盘冷启动 < 1.5s；空闲常驻 ≤ 120MB；会话窗口打开 < 300ms。
 14. **国际化**：UI 中英；提示词自动语种适配；错误信息本地化。
 15. **可访问性**：所有交互键盘可达；高对比度主题；屏幕阅读器 ARIA。
-16. **遥测/隐私**：默认仅本地，开启需明示；遵守 GDPR/PIPL 风格的清晰可关。
+16. **遥测/隐私**：**遥测默认 0、不内置开关**；不上传任何使用数据；用户主动导出的诊断包仅本地保存。
 17. **崩溃恢复**：会话自动断点；意外退出后下次启动询问续跑。
 18. **测试基线**：内置 Agent 评测脚本（小型任务集），用于切换模型/Profile 时回归。
 
@@ -375,7 +404,7 @@ icon: shield-check
 
 - 所有外部进程/网络调用过 Permission 中间件，默认拒绝高危（删除、注册表、HKLM、Win+R 输入、UAC 弹窗）。
 - 内置 SmartScreen / Defender 友好（签名 + 公开发布渠道）。
-- 用户数据**默认全部本地**；遥测最小化、可关闭、文档透明。
+- 用户数据**默认全部本地**；**不内置遥测**；漏洞 / 错误反馈走用户主动导出诊断包的方式，文档透明。
 - 漏洞报告流程（SECURITY.md）；安装包 SBOM。
 
 ---
@@ -400,10 +429,9 @@ icon: shield-check
 ```
 hlagent/
   apps/
-    desktop/        # Tauri + React
-    cli/            # Rust CLI binary
+    desktop/        # Tauri + React（唯一前端；内嵌 daemon sidecar）
   crates/
-    daemon/         # Rust daemon (HTTP/WS server)
+    daemon/         # Rust daemon（Named Pipe / HTTP-WS server，作为 sidecar 子进程）
     core/           # 调度/Agent runtime/Hook/Memory/Permission
     gateway/        # Provider 抽象 + 路由
     tools/          # 内置工具（含 windows-native 子模块）
@@ -411,25 +439,25 @@ hlagent/
     skills/         # Skills loader
   packages/
     sdk-ts/         # TS SDK（前端 + 第三方插件）
-  marketplace/      # 市场清单与签名工具
+  marketplace/      # 市场清单与签名工具（桌面应用调用）
   docs/
   examples/
 ```
 
 ### 9.2 里程碑（建议）
 - **M-1（2 周）**：威胁模型 + 安全设计评审 + 架构 ADR；选型确认（Tauri / sqlite-vec / 嵌入模型 / IPC 方案）。
-- **M0（4 周）**：daemon 雏形 + Provider gateway（OpenAI 协议 + Anthropic 协议；本地经 OpenAI 兼容 endpoint 接 Ollama / llama.cpp）+ 基础内置工具（Read/Write/Edit/Bash/Grep）+ CLI MVP。
+- **M0（4 周）**：daemon 雏形（sidecar 形式，Named Pipe + 开发模式 HTTP-WS） + Provider gateway（OpenAI 协议 + Anthropic 协议；本地经 OpenAI 兼容 endpoint 接 Ollama / llama.cpp）+ 基础内置工具（Read/Write/Edit/Bash/Grep）+ 桌面壳最小可用版（启动 daemon、单会话、流式渲染）。
 - **M1（4 周）**：桌面 Tauri 壳 + 会话 UI + Permission 弹窗 + Memory + Slash Commands + Skills loader。
 - **M2（4 周）**：Delegate + Peer 多 Agent + Hook 引擎 + MCP 双向。
 - **M2.5（2 周）**：稳定性硬化 sprint（崩溃恢复、IPC 安全、子进程隔离、审计 hash chain、回归评测集）。
 - **M3（4 周）**：Windows 原生工具集（Desktop/UIA/Office/Browser/Screen）+ 审批策略 DSL + 成本面板。
-- **M4（4 周）**：Marketplace + 自动更新 + OpenAI 兼容 endpoint 适配增强（LiteLLM / One-API 等指南与样例 profile）。
+- **M4（4 周）**：Marketplace（GitHub Releases + 索引 JSON）+ 自动更新 + OpenAI 兼容 endpoint 文档（接入 LiteLLM / One-API / 自建代理的步骤指南，不维护官方示例 profile）。
 - **v1.0**：稳定 API、签名发行、文档站、首批 20 个官方 Skills/Agents。
 
 ### 9.3 工程规范与发布（v0.2 新增）
 - **贡献者文档**：`CONTRIBUTING.md` / `CODE_OF_CONDUCT.md` / `SECURITY.md`；默认 **DCO**（不签 CLA）；Issue / PR 模板；架构决策记录目录 `docs/adr/`。
 - **发布流程**：**SemVer**；Release Train 每 4 周；Beta / Canary / Stable 三通道；LTS 标识（自 v1.0 起每年一个 LTS，维护 12 个月）。
-- **CI 矩阵**：Win10×x64、Win11×x64、Win11×ARM64（M0 不强制 ARM64 跑 E2E，但 CI 必须跑构建）；E2E 在 GitHub Actions Windows runner 上。
+- **CI 矩阵**：**Win11×x64**（兼容性烟囱回归同时跑 Win10 21H2 x64）；不构建 ARM64；E2E 在 GitHub Actions Windows runner 上。
 - **依赖供应链**：`cargo audit` / `npm audit` 强制 CI；**SBOM**（CycloneDX）随发行包；签名（minisign / Sigstore）；可重现构建目标。
 
 ---
@@ -447,12 +475,12 @@ hlagent/
   - [ ] 凭证、敏感数据无落盘明文；导出 `.hla` 无 secret
 - **关键命令**（开发期）：
   ```powershell
-  # 启动 daemon
+  # 单独跑 daemon（调试用；生产时由桌面壳作为 sidecar 启动）
   cargo run -p hlagent-daemon
-  # 启动桌面（开发模式）
+  # 启动桌面（开发模式，自动 spawn daemon sidecar）
   pnpm -C apps/desktop tauri dev
-  # 评测
-  hlagent eval run --suite default --profile fast
+  # 评测（cargo workspace 内置 bin）
+  cargo run -p hlagent-eval -- --suite default --profile fast
   ```
 
 ---
@@ -461,7 +489,7 @@ hlagent/
 
 - 新建仓库 `e:/AI/HLAgent/`，按 §9.1 布局初始化。
 - 关键模块（首批落盘）：
-  - `crates/daemon/src/main.rs`：HTTP/WS server bootstrap。
+  - `crates/daemon/src/main.rs`：daemon sidecar 启动入口（Named Pipe 默认 + 开发模式 HTTP-WS）。
   - `crates/core/src/agent.rs`：Agent 定义解析（frontmatter + system prompt）。
   - `crates/core/src/orchestrator.rs`：Delegate / Peer 两模式调度器（含嵌套与终止条件）。
   - `crates/core/src/permission.rs`：审批中间件。
@@ -469,18 +497,20 @@ hlagent/
   - `crates/gateway/src/protocol/{openai,anthropic}.rs`：双协议适配（本地模型经 OpenAI 兼容 endpoint 复用 `openai.rs`）。
   - `crates/tools/src/{fs,bash,web,desktop,uia,office,browser,screen}.rs`：内置工具。
   - `crates/mcp/src/{client,server}.rs`。
-  - `apps/desktop/src/`：会话 UI、Agent Picker、审批弹窗、任务计划面板、成本面板。
-  - `apps/cli/src/main.rs`：CLI 入口。
+  - `apps/desktop/src/`：会话 UI、Agent Picker、审批弹窗、任务计划面板、成本面板；并由壳进程托管 daemon sidecar 生命周期。
   - `marketplace/manifest-schema.json`：市场资产 manifest。
 
 ---
 
-## 12. 开放问题（待后续会话确认）
+## 12. 已确定事项（v0.4 敲定，归档备查）
 
-1. **本地 daemon 的进程模型**：常驻 vs 按需 spawn？建议常驻 + 空闲休眠（§3.3）。
-2. **Windows ARM64 是否首发**：M0 仅跑 ARM64 构建 CI，正式 E2E 与签名发行从 v1.0 / v1.1 加入？
-3. **Marketplace 后端**：自建 vs 复用 GitHub Releases + 索引 JSON？建议先 GitHub。
-4. **遥测数据保留期**：默认 0（不收集）；如启用，建议 ≤ 30 天。
-5. **是否绑定 `e:/AI/learn-claude-code` 现有学习代码作为参考样例**（仅文档引用，不作为依赖）。
-6. **OpenAI 兼容代理样例**：是否官方维护一份 LiteLLM / One-API 接 Gemini / Bedrock / Vertex / Azure / DeepSeek / Qwen 的示例 profile，还是完全社区维护？
-7. **默认 embedding 模型**：本地优先 `bge-m3` vs `text-embedding-qwen` vs 让用户首启选择？
+> 本节由先前的「开放问题」转为已确定事项；后续如需变更走 ADR。
+
+1. **本地 daemon 进程模型**：**常驻**（桌面退出后默认保留 sidecar 以加速二次唤起，可在托盘菜单关闭）。详见 §3.3。
+2. **目标平台**：仅 **Windows x64**（Win11 主，Win10 21H2 兼容）；**不构建 ARM64**；其他平台不在 v1 范围。详见 §2.1 / §9.3。
+3. **Marketplace 后端**：**GitHub Releases + 索引 JSON**，不自建后端。详见 §5.10。
+4. **遥测**：**默认 0、不内置开关**；不上传任何使用数据；反馈走用户主动导出诊断包。详见 §6 / §7。
+5. **参考样例**：引用 `e:/AI/learn-claude-code/`（claw-code 风格示意）作为设计参考与示例数据来源，**不作依赖、不打包**。详见 §1 参考来源。
+6. **OpenAI 兼容代理样例**：**官方不维护**；用户自建 LiteLLM / One-API / 自研代理接 Gemini / Bedrock / Vertex / Azure / DeepSeek / Qwen 等，由社区贡献 Profile。详见 §5.3。
+7. **嵌入模型**：**不预设默认**；首启向导由用户在候选列表中选择；未选择前 Memory 仅做关键字检索（向量检索关闭）。详见 §5.7。
+8. **全局命令栏**：**愿景，v1 不实现**；落地版本（v1.x / v2）需另立 ADR 确定快捷键、浮窗、注册表共享、隐私边界、多显示器/HiDPI 行为。详见 §5.9。
